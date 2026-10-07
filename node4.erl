@@ -50,6 +50,7 @@ node(Id, Predecessor, Successor, Next, Store,Replica) ->
 
         {status, Pred, Nx} ->
             {Succ, Nxt} = stabilize(Pred, Nx, Id, Successor),
+            check_is_new(Successor, Succ, Store),
             node(Id, Predecessor, Succ, Nxt, Store,Replica);
 
         stabilize ->
@@ -82,7 +83,13 @@ node(Id, Predecessor, Successor, Next, Store,Replica) ->
 
         {handover, Elements} ->
             Merged = storage:merge(Elements, Store),
+            {_, _, Spid} = Successor,
+            Spid ! {cloneReplica, Merged},
             node(Id, Predecessor, Successor, Next, Merged,Replica);
+
+        state ->
+            io:format("Id ~w: store ~w keys, replica ~w keys~n", [Id, length(Store), length(Replica)]),
+            node(Id, Predecessor, Successor, Next, Store, Replica);
 
         %% A monitored predecessor or successor died
         {'DOWN', Ref, process, _, _} ->
@@ -141,25 +148,22 @@ notify({Nkey, Npid}, Id, Predecessor, {_, _, Spid}, Store, Replica) ->
     case Predecessor of
         nil ->
             Nref = monitor(Npid),
-            {Keep, NewReplica} = handover(Id, Store, Nkey, Npid),
-
-            Npid ! {cloneReplica, Replica},
+            Keep = handover(Id, Store, Nkey, Npid),
 
             Spid ! {cloneReplica, Keep},
 
-            {{Nkey, Nref, Npid}, Keep, NewReplica};
+            {{Nkey, Nref, Npid}, Keep, Replica};
 
         {Pkey, Pref, _} ->
             case key:between(Nkey, Pkey, Id) of
                 true ->
                     drop(Pref),
                     Nref = monitor(Npid),
-                    {Keep, NewReplica} = handover(Id, Store, Nkey, Npid),
+                    Keep = handover(Id, Store, Nkey, Npid),
 
-                    Npid ! {cloneReplica, Replica},
                     Spid ! {cloneReplica, Keep},
 
-                    {{Nkey, Nref, Npid}, Keep, NewReplica};
+                    {{Nkey, Nref, Npid}, Keep, Replica};
 
                 false ->
                     {Predecessor, Store, Replica}
@@ -169,7 +173,7 @@ notify({Nkey, Npid}, Id, Predecessor, {_, _, Spid}, Store, Replica) ->
 handover(Id, Store, Nkey, Npid) ->
     {Rest, Keep} = storage:split(Id, Nkey, Store),
     Npid ! {handover, Rest},
-    {Keep, Rest}.
+    Keep.
 
 %% Monitor helpers
 monitor(Pid) ->
@@ -191,15 +195,19 @@ down(Ref, Predecessor, {_, Ref, _}, {Nkey, Npid},Store,Replica) ->
     Nref = monitor(Npid),
     NewSuccessor = {Nkey, Nref, Npid},
 
-
-    Npid ! {cloneReplica, Store},
-
     stabilize(NewSuccessor),
     {Predecessor, NewSuccessor, nil,Store,Replica};
 
 %% Ignore DOWN messages that do not belong to current neighbours
 down(_, Predecessor, Successor, Next,Store,Replica) ->
     {Predecessor, Successor, Next,Store,Replica}.
+
+%% If stabilize gave us a different successor, it must get a copy of our store
+check_is_new({_, _, Pid}, {_, _, Pid}, _Store) ->
+    ok;
+check_is_new(_Old, {_, _, NewPid}, Store) ->
+    NewPid ! {cloneReplica, Store},
+    ok.
 
 create_probe(Id, {_, _, Spid}) ->
     T = erlang:system_time(microsecond),
