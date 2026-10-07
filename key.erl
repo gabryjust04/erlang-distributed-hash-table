@@ -3,7 +3,7 @@
 
 % Generate a random key for the node
 generate() ->
-    random:uniform(1000000000).
+    rand:uniform(1000000000).
 
 between(Key, From, To) when From < To ->
     Key > From andalso Key =< To;
